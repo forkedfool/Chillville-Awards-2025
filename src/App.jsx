@@ -9,7 +9,7 @@ import { supabase } from './supabase.js';
 export default function ChillvilleApp() {
   // State
   const [categories, setCategories] = useState([]);
-  const [view, setView] = useState('landing'); // 'landing', 'voting', 'success', 'admin-login', 'admin-dashboard'
+  const [view, setView] = useState('landing'); // 'landing', 'voting', 'success', 'admin-login', 'admin-dashboard', 'privacy'
   const [votes, setVotes] = useState({});
   const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -31,6 +31,14 @@ export default function ChillvilleApp() {
   // Vote Stats для админ-панели
   const [voteStats, setVoteStats] = useState({});
 
+  // Navigation Helper
+  const navigateTo = (viewName, path = null) => {
+    setView(viewName);
+    if (path) {
+      window.history.pushState({}, '', path);
+    }
+  };
+
   // Настройка Supabase и загрузка данных при монтировании
   useEffect(() => {
     // Настраиваем получение токена для API
@@ -43,13 +51,13 @@ export default function ChillvilleApp() {
     supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' && session) {
         await checkAuth();
-        setView('voting');
+        navigateTo('voting', '/voting');
         // Очищаем URL от параметров OAuth
-        window.history.replaceState({}, document.title, window.location.pathname);
+        window.history.replaceState({}, document.title, '/voting');
       } else if (event === 'SIGNED_OUT') {
         setUser(null);
         setVotes({});
-        setView('landing');
+        navigateTo('landing', '/');
       }
     });
 
@@ -62,10 +70,31 @@ export default function ChillvilleApp() {
 
     loadInitialData();
     
-    // Если URL содержит /voting, переключаемся на страницу голосования
-    if (window.location.pathname.includes('voting') || window.location.hash === '#voting') {
+    // Обработка URL роутинга
+    const pathname = window.location.pathname;
+    if (pathname.includes('/privacy')) {
+      setView('privacy');
+    } else if (pathname.includes('/voting') || window.location.hash === '#voting') {
       setView('voting');
     }
+    
+    // Обработка изменения URL через history API
+    const handlePopState = () => {
+      const path = window.location.pathname;
+      if (path.includes('/privacy')) {
+        setView('privacy');
+      } else if (path.includes('/voting')) {
+        setView('voting');
+      } else {
+        setView('landing');
+      }
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
   }, []);
 
   // Проверка авторизации при изменении view
@@ -78,13 +107,19 @@ export default function ChillvilleApp() {
   // Автоматический редирект на голосование, если пользователь авторизован и на лендинге
   useEffect(() => {
     if (!isLoading && view === 'landing' && user) {
-      setView('voting');
+      navigateTo('voting', '/voting');
     }
   }, [isLoading, view, user]);
 
   async function loadInitialData() {
     try {
       setIsLoading(true);
+      
+      // Общий таймаут для всей загрузки (10 секунд)
+      const loadTimeout = setTimeout(() => {
+        console.warn('Таймаут загрузки данных - принудительное завершение');
+        setIsLoading(false);
+      }, 10000);
       
       // Проверяем авторизацию (не блокируем, если бекенд недоступен)
       try {
@@ -110,6 +145,8 @@ export default function ChillvilleApp() {
           console.warn('Не удалось загрузить голоса:', error);
         }
       }
+      
+      clearTimeout(loadTimeout);
     } catch (error) {
       console.error('Ошибка загрузки данных:', error);
     } finally {
@@ -122,12 +159,31 @@ export default function ChillvilleApp() {
       const { data: { session } } = await supabase.auth.getSession();
       
       if (session) {
-        // Получаем информацию о пользователе через API
-        const apiData = await authAPI.getMe();
-        if (apiData && apiData.authenticated) {
-          setUser(apiData.user);
-        } else {
-          // Если API недоступен, используем данные из Supabase сессии
+        // Получаем информацию о пользователе через API с таймаутом
+        try {
+          // Таймаут для getMe - 3 секунды
+          const apiData = await Promise.race([
+            authAPI.getMe(),
+            new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Таймаут')), 3000)
+            )
+          ]);
+          
+          if (apiData && apiData.authenticated) {
+            setUser(apiData.user);
+          } else {
+            // Если API вернул пустой ответ, используем данные из Supabase
+            const userMetadata = session.user.user_metadata;
+            setUser({
+              id: session.user.id,
+              discordId: userMetadata.provider_id || session.user.id,
+              username: userMetadata.full_name || userMetadata.preferred_username || session.user.email?.split('@')[0] || 'User',
+              avatar: userMetadata.avatar_url || null
+            });
+          }
+        } catch (apiError) {
+          // Если API недоступен или таймаут - используем данные из Supabase сессии
+          console.warn('API недоступен, используем данные из Supabase:', apiError);
           const userMetadata = session.user.user_metadata;
           setUser({
             id: session.user.id,
@@ -142,9 +198,10 @@ export default function ChillvilleApp() {
       }
     } catch (error) {
       // Не критично, если бекенд недоступен
+      console.warn('Ошибка проверки авторизации:', error);
       setUser(null);
       setIsAdmin(false);
-      throw error; // Пробрасываем ошибку для обработки выше
+      // НЕ пробрасываем ошибку, чтобы не блокировать загрузку
     }
   }
 
@@ -179,6 +236,7 @@ export default function ChillvilleApp() {
       setVoteStats(statsMap);
     } catch (error) {
       console.error('Ошибка загрузки статистики:', error);
+      throw error; // ВАЖНО: пробрасываем ошибку дальше для проверки прав доступа
     }
   }
 
@@ -209,7 +267,7 @@ export default function ChillvilleApp() {
   const handleSubmit = async () => {
     try {
       await votesAPI.submit(votes);
-      setView('success');
+      navigateTo('success');
     } catch (error) {
       alert('Ошибка при отправке голосов: ' + error.message);
     }
@@ -220,7 +278,7 @@ export default function ChillvilleApp() {
       await supabase.auth.signOut();
       setUser(null);
       setVotes({});
-      setView('landing');
+      navigateTo('landing', '/');
     } catch (error) {
       console.error('Ошибка выхода:', error);
     }
@@ -228,7 +286,14 @@ export default function ChillvilleApp() {
 
   // Admin Handlers
   const handleAdminLogin = async () => {
-    // Проверка авторизации через API
+    // ПРОВЕРКА ПАРОЛЯ
+    if (adminPass !== 'admin') {
+      alert('Неверный пароль');
+      setAdminPass('');
+      return;
+    }
+
+    // Проверка авторизации через Discord
     if (!user) {
       alert('Необходима авторизация через Discord');
       handleLogin();
@@ -239,12 +304,15 @@ export default function ChillvilleApp() {
     // Если нет - бекенд вернет 403
     try {
       await loadVoteStats();
-      setView('admin-dashboard');
+      navigateTo('admin-dashboard');
+      setAdminPass(''); // Очищаем пароль после успешного входа
     } catch (error) {
       if (error.message.includes('403') || error.message.includes('запрещен')) {
         alert('ACCESS DENIED - У вас нет прав администратора');
+        setAdminPass('');
       } else {
         alert('Ошибка доступа: ' + error.message);
+        setAdminPass('');
       }
     }
   };
@@ -450,7 +518,7 @@ export default function ChillvilleApp() {
 
       {/* NAVBAR */}
       <nav className="relative z-50 flex items-center justify-between px-6 py-6 border-b border-gray-800 backdrop-blur-md">
-        <div className="flex items-center gap-2 cursor-pointer" onClick={() => setView('landing')}>
+        <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigateTo('landing', '/')}>
            <div className="w-8 h-8 bg-teal-400 text-black flex items-center justify-center font-bold font-display rounded-sm transform -skew-x-12">
              C
            </div>
@@ -555,7 +623,7 @@ export default function ChillvilleApp() {
               </button>
             ) : (
               <button 
-                onClick={() => setView('voting')}
+                onClick={() => navigateTo('voting', '/voting')}
                 className="group relative px-12 py-6 bg-transparent border border-teal-400 text-teal-400 font-display font-bold uppercase tracking-widest text-lg overflow-hidden hover:text-black hover:bg-teal-400 transition-all duration-300"
               >
                 <div className="relative z-10 flex items-center gap-3">
@@ -705,12 +773,122 @@ export default function ChillvilleApp() {
              </p>
              
              <button 
-               onClick={() => setView('landing')}
+               onClick={() => navigateTo('landing', '/')}
                className="mt-12 text-gray-500 hover:text-white underline decoration-1 underline-offset-4"
              >
                Вернуться на главную
              </button>
           </div>
+        )}
+
+        {/* === PRIVACY POLICY VIEW === */}
+        {!isLoading && view === 'privacy' && (
+          <main className="container mx-auto px-4 py-16 max-w-4xl relative z-10">
+            <div className="mb-8">
+              <button 
+                onClick={() => navigateTo('landing', '/')}
+                className="text-gray-500 hover:text-white font-mono text-sm flex items-center gap-2 mb-6"
+              >
+                <ChevronRight size={16} className="rotate-180" />
+                Назад
+              </button>
+              <h1 className="text-4xl md:text-5xl font-display font-bold uppercase text-white mb-4">
+                Политика конфиденциальности
+              </h1>
+              <p className="text-gray-500 font-mono text-sm border-l-2 border-teal-400 pl-3">
+                PRIVACY_POLICY // LAST_UPDATED: 2025
+              </p>
+            </div>
+
+            <div className="prose prose-invert max-w-none space-y-8 text-gray-300 font-mono text-sm leading-relaxed">
+              
+              <section className="border-l-2 border-gray-800 pl-6">
+                <h2 className="text-2xl font-display font-bold text-white mb-4 uppercase">1. Общие положения</h2>
+                <p className="mb-4">
+                  Настоящая Политика конфиденциальности определяет порядок обработки и защиты персональных данных пользователей 
+                  платформы Chillville Awards 2025 (далее — «Платформа»).
+                </p>
+                <p>
+                  Используя Платформу, вы соглашаетесь с условиями настоящей Политики конфиденциальности.
+                </p>
+              </section>
+
+              <section className="border-l-2 border-gray-800 pl-6">
+                <h2 className="text-2xl font-display font-bold text-white mb-4 uppercase">2. Собираемые данные</h2>
+                <p className="mb-4">При авторизации через Discord мы получаем следующие данные:</p>
+                <ul className="list-disc list-inside space-y-2 ml-4 text-gray-400">
+                  <li>Идентификатор пользователя Discord (Discord ID)</li>
+                  <li>Имя пользователя (username)</li>
+                  <li>Аватар пользователя (если доступен)</li>
+                  <li>Email адрес (если предоставлен Discord)</li>
+                </ul>
+                <p className="mt-4">
+                  Дополнительно мы сохраняем информацию о ваших голосах в номинациях для обеспечения целостности процесса голосования.
+                </p>
+              </section>
+
+              <section className="border-l-2 border-gray-800 pl-6">
+                <h2 className="text-2xl font-display font-bold text-white mb-4 uppercase">3. Цели использования данных</h2>
+                <p className="mb-4">Собранные данные используются исключительно для:</p>
+                <ul className="list-disc list-inside space-y-2 ml-4 text-gray-400">
+                  <li>Идентификации пользователя при входе в систему</li>
+                  <li>Обеспечения возможности голосования</li>
+                  <li>Предотвращения повторного голосования</li>
+                  <li>Отображения статистики голосования (без привязки к конкретным пользователям)</li>
+                </ul>
+              </section>
+
+              <section className="border-l-2 border-gray-800 pl-6">
+                <h2 className="text-2xl font-display font-bold text-white mb-4 uppercase">4. Хранение данных</h2>
+                <p className="mb-4">
+                  Данные хранятся на защищенных серверах Supabase (PostgreSQL) с применением современных мер безопасности.
+                </p>
+                <p>
+                  Мы не передаем ваши персональные данные третьим лицам, за исключением случаев, предусмотренных законодательством.
+                </p>
+              </section>
+
+              <section className="border-l-2 border-gray-800 pl-6">
+                <h2 className="text-2xl font-display font-bold text-white mb-4 uppercase">5. Ваши права</h2>
+                <p className="mb-4">Вы имеете право:</p>
+                <ul className="list-disc list-inside space-y-2 ml-4 text-gray-400">
+                  <li>Запросить информацию о хранящихся о вас данных</li>
+                  <li>Запросить удаление ваших данных</li>
+                  <li>Отозвать согласие на обработку данных</li>
+                </ul>
+                <p className="mt-4">
+                  Для реализации этих прав свяжитесь с администрацией через Discord сервер: 
+                  <a href="https://discord.gg/chill-ville" target="_blank" rel="noopener noreferrer" className="text-teal-400 hover:text-teal-300 ml-1">
+                    discord.gg/chill-ville
+                  </a>
+                </p>
+              </section>
+
+              <section className="border-l-2 border-gray-800 pl-6">
+                <h2 className="text-2xl font-display font-bold text-white mb-4 uppercase">6. Cookies и технологии отслеживания</h2>
+                <p>
+                  Мы используем сессионные токены для поддержания вашей авторизации. Эти данные хранятся локально в вашем браузере 
+                  и автоматически удаляются при выходе из системы.
+                </p>
+              </section>
+
+              <section className="border-l-2 border-gray-800 pl-6">
+                <h2 className="text-2xl font-display font-bold text-white mb-4 uppercase">7. Изменения в политике</h2>
+                <p>
+                  Мы оставляем за собой право вносить изменения в настоящую Политику конфиденциальности. 
+                  Актуальная версия всегда доступна по адресу: <span className="text-teal-400">/privacy</span>
+                </p>
+              </section>
+
+              <section className="border-l-2 border-teal-400 pl-6 mt-12 pt-6 border-t border-gray-800">
+                <p className="text-gray-500 text-xs">
+                  Последнее обновление: 2025<br/>
+                  © 2025 Chillville Server. Все права защищены.
+                </p>
+              </section>
+
+            </div>
+          </main>
         )}
 
         {/* === ADMIN LOGIN === */}
@@ -736,7 +914,7 @@ export default function ChillvilleApp() {
                  Authorize
                </button>
                <button 
-                 onClick={() => setView('landing')}
+                 onClick={() => navigateTo('landing', '/')}
                  className="w-full mt-4 text-gray-600 hover:text-white text-xs font-mono uppercase"
                >
                  Cancel
@@ -754,7 +932,7 @@ export default function ChillvilleApp() {
                   <p className="text-gray-500 font-mono text-xs">MANAGE_NOMINEES // VIEW_RESULTS</p>
                </div>
                <button 
-                 onClick={() => setView('landing')} 
+                 onClick={() => navigateTo('landing', '/')} 
                  className="flex items-center gap-2 text-red-500 hover:text-white font-mono text-sm border border-red-500/30 px-4 py-2 hover:bg-red-500/10"
                >
                  <LogOut size={14} /> LOGOUT
@@ -1087,11 +1265,21 @@ export default function ChillvilleApp() {
 
             <div className="text-gray-600 text-xs flex flex-col justify-end items-end">
               <button 
-                onClick={() => setView('admin-login')} 
+                onClick={() => navigateTo('admin-login')} 
                 className="mb-4 text-gray-700 hover:text-white flex items-center gap-1"
               >
                 <Lock size={10} /> Admin
               </button>
+              <a 
+                href="/privacy" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  navigateTo('privacy', '/privacy');
+                }}
+                className="mb-2 text-gray-600 hover:text-white transition-colors"
+              >
+                Политика конфиденциальности
+              </a>
               <p className="mb-2">© 2025 Chillville Server.</p>
               <div className="mt-4 pt-4 border-t border-gray-800 flex justify-between items-center w-full">
                  <span>v2.5.0</span>
@@ -1105,4 +1293,5 @@ export default function ChillvilleApp() {
     </div>
   );
 }
+
 

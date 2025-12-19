@@ -1,5 +1,18 @@
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 
+// Таймаут для API запросов (5 секунд)
+const API_TIMEOUT = 5000;
+
+// Функция с таймаутом для fetch
+function fetchWithTimeout(url, options, timeout = API_TIMEOUT) {
+  return Promise.race([
+    fetch(url, options),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Таймаут запроса')), timeout)
+    )
+  ]);
+}
+
 // Получение токена из Supabase (будет использоваться на фронтенде)
 let getAuthToken = async () => {
   // Если используется Supabase на фронтенде
@@ -26,7 +39,7 @@ async function apiRequest(endpoint, options = {}) {
   };
 
   try {
-    const response = await fetch(url, config);
+    const response = await fetchWithTimeout(url, config, API_TIMEOUT);
     
     // Если ответ не JSON
     let data;
@@ -42,6 +55,9 @@ async function apiRequest(endpoint, options = {}) {
     
     return data;
   } catch (error) {
+    if (error.message.includes('Таймаут запроса')) {
+      throw new Error('Превышено время ожидания ответа сервера');
+    }
     if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
       throw new Error('Бекенд недоступен. Убедитесь, что сервер запущен на порту 3000');
     }

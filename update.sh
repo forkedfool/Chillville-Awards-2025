@@ -30,7 +30,7 @@ npm run build
 # Перезапуск бэкенда
 echo "🔄 Перезапуск бэкенда..."
 cd server
-pm2 restart chillville-awards-backend || pm2 start ecosystem.config.js
+pm2 restart chillville-awards-backend || pm2 start ecosystem.config.cjs
 cd ..
 
 echo "✅ Обновление завершено!"
